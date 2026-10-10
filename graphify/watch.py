@@ -2035,6 +2035,8 @@ def _rebuild_code(
                         "_callable", "_callable_class", "_elixir_module",
                         "_rust_impl_key", "_rust_declaration_count",
                         "_ts_public_twin", "_py_property", "_java_ret",
+                        "_ts_public_twin", "_py_property",
+                        "_rust_ret", "_rust_ret_ok", "_rust_fields",
                     ):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
