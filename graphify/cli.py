@@ -4277,6 +4277,7 @@ def dispatch_command(cmd: str) -> None:
                             "_callable", "_callable_class", "_elixir_module",
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
+                            "_py_fixture",
                         ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
@@ -4310,7 +4311,7 @@ def dispatch_command(cmd: str) -> None:
                         "links", _ctx_graph.get("edges", [])
                     ):
                         if _edge.get("relation") not in (
-                            "contains", "method", "inherits"
+                            "contains", "method", "inherits", "imports", "imports_from"
                         ):
                             continue
                         if not _ctx_is_ast_tier(_edge):
