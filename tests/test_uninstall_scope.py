@@ -12,6 +12,7 @@ These tests pin the fixed contract:
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -40,10 +41,19 @@ def _plant_skill_tree(root: Path, dot_dir: str) -> Path:
     return skill_dir
 
 
+def _global_dot_dir(platform: str, default_dot_dir: str) -> str:
+    from graphify.install import _platform_skill_destination
+    dst = _platform_skill_destination(platform, project=False)
+    try:
+        return dst.relative_to(Path.home()).parts[0]
+    except ValueError:
+        return default_dot_dir
+
+
 @pytest.mark.parametrize("uninstall_fn,platform,dot_dir", PLATFORMS)
 def test_project_dir_call_never_touches_global(uninstall_fn, platform, dot_dir, tmp_path):
     """fn(project_dir) removes only the project skill tree (#2215 trap closed)."""
-    global_tree = _plant_skill_tree(Path.home(), dot_dir)
+    global_tree = _plant_skill_tree(Path.home(), _global_dot_dir(platform, dot_dir))
     proj_dir = tmp_path / "proj"
     project_tree = _plant_skill_tree(proj_dir, dot_dir)
 
@@ -59,7 +69,7 @@ def test_project_dir_call_never_touches_global(uninstall_fn, platform, dot_dir, 
 @pytest.mark.parametrize("uninstall_fn,platform,dot_dir", PLATFORMS)
 def test_bare_call_still_removes_global(uninstall_fn, platform, dot_dir, tmp_path, monkeypatch):
     """fn() with no args keeps the historical CLI behavior: global skill removed."""
-    global_tree = _plant_skill_tree(Path.home(), dot_dir)
+    global_tree = _plant_skill_tree(Path.home(), _global_dot_dir(platform, dot_dir))
     cwd = tmp_path / "empty-cwd"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
@@ -73,7 +83,7 @@ def test_bare_call_still_removes_global(uninstall_fn, platform, dot_dir, tmp_pat
 @pytest.mark.parametrize("uninstall_fn,platform,dot_dir", PLATFORMS)
 def test_remove_user_skill_opt_in_with_project_dir(uninstall_fn, platform, dot_dir, tmp_path):
     """fn(pd, remove_user_skill=True) removes the global skill, leaves the project tree."""
-    global_tree = _plant_skill_tree(Path.home(), dot_dir)
+    global_tree = _plant_skill_tree(Path.home(), _global_dot_dir(platform, dot_dir))
     proj_dir = tmp_path / "proj"
     project_tree = _plant_skill_tree(proj_dir, dot_dir)
 
@@ -88,7 +98,7 @@ def test_remove_user_skill_opt_in_with_project_dir(uninstall_fn, platform, dot_d
 @pytest.mark.parametrize("uninstall_fn,platform,dot_dir", PLATFORMS)
 def test_project_true_removes_only_project_tree(uninstall_fn, platform, dot_dir, tmp_path):
     """fn(pd, project=True) removes only the project skill tree."""
-    global_tree = _plant_skill_tree(Path.home(), dot_dir)
+    global_tree = _plant_skill_tree(Path.home(), _global_dot_dir(platform, dot_dir))
     proj_dir = tmp_path / "proj"
     project_tree = _plant_skill_tree(proj_dir, dot_dir)
 
@@ -111,6 +121,36 @@ def test_project_uninstall_codebuddy_spares_global(tmp_path):
     assert (global_tree / ".graphify_version").exists()
     assert not (project_tree / "SKILL.md").exists()
     assert not project_tree.exists()
+
+
+def test_project_uninstall_mimo_spares_global(tmp_path, monkeypatch):
+    """`graphify uninstall --project` (mimo branch) must not delete ~/.config/mimocode."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    global_dir = home / ".config" / "mimocode"
+    global_tree = _plant_skill_tree(global_dir, "")
+    global_plugin = global_dir / "plugins" / "graphify.js"
+    global_plugin.parent.mkdir(parents=True, exist_ok=True)
+    global_plugin.write_text("// global plugin\n", encoding="utf-8")
+    global_cfg = global_dir / "mimocode.json"
+    global_cfg.write_text(json.dumps({"plugin": [global_plugin.as_posix()]}), encoding="utf-8")
+
+    proj_dir = tmp_path / "proj"
+    project_tree = _plant_skill_tree(proj_dir, ".mimocode")
+    proj_plugin = proj_dir / ".mimocode" / "plugins" / "graphify.js"
+    proj_plugin.parent.mkdir(parents=True, exist_ok=True)
+    proj_plugin.write_text("// proj plugin\n", encoding="utf-8")
+    proj_cfg = proj_dir / ".mimocode" / "mimocode.json"
+    proj_cfg.write_text(json.dumps({"plugin": ["./plugins/graphify.js"]}), encoding="utf-8")
+
+    _project_uninstall("mimo", proj_dir)
+
+    assert (global_tree / "SKILL.md").exists(), "CLI --project uninstall deleted the global mimo skill"
+    assert (global_tree / ".graphify_version").exists()
+    assert global_plugin.exists(), "CLI --project uninstall deleted the global mimo plugin"
+    assert global_cfg.exists(), "CLI --project uninstall deleted the global mimo config"
+    assert not (project_tree / "SKILL.md").exists()
+    assert not proj_plugin.exists()
 
 
 import pytest as _pytest_posix
