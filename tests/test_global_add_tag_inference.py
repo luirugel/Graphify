@@ -111,14 +111,105 @@ def test_several_sources_add_in_one_batch(monkeypatch, tmp_path, store):
     assert sorted(_manifest(store)) == ["alpha", "beta"]
 
 
-def test_as_tag_is_rejected_for_several_sources(monkeypatch, tmp_path, store):
-    """One `--as` cannot name two sources; the batch is refused rather than guessed."""
+def test_each_source_takes_its_own_as_tag(monkeypatch, tmp_path, store):
+    """`--as` binds to the source it follows, so a batch can name every member."""
     a = tmp_path / "alpha" / "graph.json"
     b = tmp_path / "beta" / "graph.json"
     _write_graph(a)
     _write_graph(b)
 
-    assert _run(monkeypatch, ["graphify", "global", "add", str(a), str(b), "--as", "x"]) == 1
+    argv = ["graphify", "global", "add", str(a), "--as", "one", str(b), "--as", "two"]
+    assert _run(monkeypatch, argv) == 0
+
+    assert sorted(_manifest(store)) == ["one", "two"]
+
+
+def test_as_equals_form_is_accepted(monkeypatch, tmp_path, store):
+    graph = tmp_path / "graph.json"
+    _write_graph(graph)
+
+    assert _run(monkeypatch, ["graphify", "global", "add", str(graph), "--as=chosen"]) == 0
+
+    assert list(_manifest(store)) == ["chosen"]
+
+
+def test_one_as_tags_only_the_source_it_follows(monkeypatch, tmp_path, store):
+    """A trailing `--as` names its own source; the earlier one is still inferred."""
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graph.json"
+    _write_graph(a)
+    _write_graph(b)
+
+    assert _run(monkeypatch, ["graphify", "global", "add", str(a), str(b), "--as", "x"]) == 0
+
+    assert sorted(_manifest(store)) == ["alpha", "x"]
+
+
+def test_duplicate_explicit_tags_are_rejected(monkeypatch, tmp_path, store):
+    """Two sources named the same tag would prune each other; the batch is refused."""
+    a = tmp_path / "alpha" / "graph.json"
+    b = tmp_path / "beta" / "graph.json"
+    _write_graph(a)
+    _write_graph(b)
+
+    argv = ["graphify", "global", "add", str(a), "--as", "x", str(b), "--as", "x"]
+    assert _run(monkeypatch, argv) == 1
+
+    assert not (store / "global-manifest.json").exists()
+
+
+@pytest.mark.parametrize("bad", ["", "a b", "r::o"])
+def test_invalid_explicit_tags_are_rejected(monkeypatch, tmp_path, store, bad):
+    """Blank, whitespaced, or `::`-bearing tags break the `tag::id` namespace."""
+    graph = tmp_path / "graph.json"
+    _write_graph(graph)
+
+    assert _run(monkeypatch, ["graphify", "global", "add", str(graph), "--as", bad]) == 1
+
+    assert not (store / "global-manifest.json").exists()
+
+
+def test_a_directory_resolves_to_its_graph_json(monkeypatch, tmp_path, store):
+    repo = tmp_path / "myrepo"
+    _write_graph(repo / "graphify-out" / "graph.json")
+
+    assert _run(monkeypatch, ["graphify", "global", "add", str(repo)]) == 0
+
+    assert list(_manifest(store)) == ["myrepo"]
+
+
+def test_a_directory_without_a_graph_is_a_usage_error(monkeypatch, tmp_path, store):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    assert _run(monkeypatch, ["graphify", "global", "add", str(empty)]) == 1
+
+    assert not (store / "global-manifest.json").exists()
+
+
+def test_an_unknown_flag_is_rejected(monkeypatch, tmp_path, store):
+    graph = tmp_path / "graph.json"
+    _write_graph(graph)
+
+    assert _run(monkeypatch, ["graphify", "global", "add", str(graph), "--nope"]) == 1
+
+    assert not (store / "global-manifest.json").exists()
+
+
+def test_a_dangling_as_is_rejected(monkeypatch, tmp_path, store):
+    graph = tmp_path / "graph.json"
+    _write_graph(graph)
+
+    assert _run(monkeypatch, ["graphify", "global", "add", str(graph), "--as"]) == 1
+
+    assert not (store / "global-manifest.json").exists()
+
+
+def test_as_before_any_source_is_rejected(monkeypatch, tmp_path, store):
+    graph = tmp_path / "graph.json"
+    _write_graph(graph)
+
+    assert _run(monkeypatch, ["graphify", "global", "add", "--as", "x", str(graph)]) == 1
 
     assert not (store / "global-manifest.json").exists()
 

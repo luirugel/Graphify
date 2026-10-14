@@ -3560,33 +3560,77 @@ def dispatch_command(cmd: str) -> None:
             global_path as _global_path,
         )
         if subcmd == "add":
-            # graphify global add <graph.json> [<graph.json> ...] [--as <tag>]
-            # Several sources go through global_add_many in one pass: the batch pays
-            # the whole-graph load / cross-repo link / save once, not once per unit,
-            # so adding K repos stays linear instead of K whole-graph cycles.
+            # graphify global add <graph-or-dir> [<graph-or-dir> ...] [--as <tag>] ...
+            # One pass through global_add_many: the batch pays the whole-graph load /
+            # cross-repo link / save once, not per unit. Each `--as <tag>` binds to the
+            # source it follows; untagged sources are named as one batch so
+            # distinct_repo_tags' collision widening spans them.
+            from graphify.build import distinct_repo_tags
+
+            def _resolve_source(raw: str):
+                # A directory stands in for the graph.json inside it (repo dir or its
+                # graphify-out); None means a dir holding neither. A non-dir path is
+                # handed through for global_add_many to name if it does not exist.
+                p = Path(raw)
+                if p.is_dir():
+                    for cand in (p / "graph.json", p / "graphify-out" / "graph.json"):
+                        if cand.is_file():
+                            return cand
+                    return None
+                return p
+
             args = sys.argv[3:]
             sources: list[Path] = []
-            tag = None
+            tags: list[str | None] = []
             i = 0
             while i < len(args):
-                if args[i] == "--as" and i + 1 < len(args):
-                    tag = args[i + 1]; i += 2
+                arg = args[i]
+                if arg == "--as" or arg.startswith("--as="):
+                    if arg.startswith("--as="):
+                        value = arg[5:]
+                    elif i + 1 < len(args) and not args[i + 1].startswith("--"):
+                        value = args[i + 1]; i += 1
+                    else:
+                        print("error: --as needs a tag value.", file=sys.stderr)
+                        sys.exit(1)
+                    if not sources:
+                        print("error: --as must follow the graph it tags.", file=sys.stderr)
+                        sys.exit(1)
+                    if tags[-1] is not None:
+                        print(f"error: {str(sources[-1])!r} is already tagged {tags[-1]!r}.",
+                              file=sys.stderr)
+                        sys.exit(1)
+                    if not value.strip() or any(c.isspace() for c in value) or "::" in value:
+                        # The tag becomes a node-id prefix (`tag::id`, split back on the
+                        # first `::`); a blank/whitespaced/`::` tag leaves the repo
+                        # boundary unprunable and unaddressable.
+                        print(f"error: invalid tag {value!r}: no blanks, whitespace, or '::'.",
+                              file=sys.stderr)
+                        sys.exit(1)
+                    tags[-1] = value
+                    i += 1
+                elif arg.startswith("--"):
+                    print(f"error: unknown flag {arg!r}.", file=sys.stderr)
+                    sys.exit(1)
                 else:
-                    sources.append(Path(args[i])); i += 1
+                    resolved = _resolve_source(arg)
+                    if resolved is None:
+                        print(f"error: no graph.json under directory {arg!r}.",
+                              file=sys.stderr)
+                        sys.exit(1)
+                    sources.append(resolved)
+                    tags.append(None)
+                    i += 1
             if not sources:
-                print("Usage: graphify global add <graph.json>... [--as <repo-tag>]",
+                print("Usage: graphify global add <graph-or-dir>... [--as <repo-tag>]",
                       file=sys.stderr)
                 sys.exit(1)
-            if tag and len(sources) > 1:
-                # --as names one tag; it cannot stand for several sources at once.
-                print("error: --as names one tag; drop it to add several sources.",
-                      file=sys.stderr)
-                sys.exit(1)
-            # Inferred through merge-graphs' own helper, which degrades to "repo"
-            # instead of "": an empty tag prunes by "" and registers a manifest
-            # entry no later add can address.
-            from graphify.build import distinct_repo_tags
-            units = [(s, tag or distinct_repo_tags([s.absolute()])[0]) for s in sources]
+            # Name every untagged source in one call so distinct_repo_tags widens any
+            # colliding directory names across the batch; explicit tags keep position.
+            untagged = [s.absolute() for s, t in zip(sources, tags) if t is None]
+            inferred = iter(distinct_repo_tags(untagged))
+            units = [(s, t if t is not None else next(inferred))
+                     for s, t in zip(sources, tags)]
             try:
                 batch = _global_add_many(units)
                 for result in batch["results"]:
