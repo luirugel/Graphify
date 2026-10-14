@@ -3554,43 +3554,94 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "global":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         from graphify.global_graph import (
-            global_add as _global_add,
+            global_add_many as _global_add_many,
             global_remove as _global_remove,
             global_list as _global_list,
             global_path as _global_path,
         )
         if subcmd == "add":
-            # graphify global add <graph.json> [--as <tag>]
+            # graphify global add <graph-or-dir> [<graph-or-dir> ...] [--as <tag>] ...
+            # One pass through global_add_many: the batch pays the whole-graph load /
+            # cross-repo link / save once, not per unit. Each `--as <tag>` binds to the
+            # source it follows; untagged sources are named as one batch so
+            # distinct_repo_tags' collision widening spans them.
+            from graphify.build import distinct_repo_tags
+
+            def _resolve_source(raw: str):
+                # A directory stands in for the graph.json inside it (repo dir or its
+                # graphify-out); None means a dir holding neither. A non-dir path is
+                # handed through for global_add_many to name if it does not exist.
+                p = Path(raw)
+                if p.is_dir():
+                    for cand in (p / "graph.json", p / "graphify-out" / "graph.json"):
+                        if cand.is_file():
+                            return cand
+                    return None
+                return p
+
             args = sys.argv[3:]
-            source = None
-            tag = None
+            sources: list[Path] = []
+            tags: list[str | None] = []
             i = 0
             while i < len(args):
-                if args[i] == "--as" and i + 1 < len(args):
-                    tag = args[i + 1]; i += 2
-                elif not source:
-                    source = Path(args[i]); i += 1
-                else:
+                arg = args[i]
+                if arg == "--as" or arg.startswith("--as="):
+                    if arg.startswith("--as="):
+                        value = arg[5:]
+                    elif i + 1 < len(args) and not args[i + 1].startswith("--"):
+                        value = args[i + 1]; i += 1
+                    else:
+                        print("error: --as needs a tag value.", file=sys.stderr)
+                        sys.exit(1)
+                    if not sources:
+                        print("error: --as must follow the graph it tags.", file=sys.stderr)
+                        sys.exit(1)
+                    if tags[-1] is not None:
+                        print(f"error: {str(sources[-1])!r} is already tagged {tags[-1]!r}.",
+                              file=sys.stderr)
+                        sys.exit(1)
+                    if not value.strip() or any(c.isspace() for c in value) or "::" in value:
+                        # The tag becomes a node-id prefix (`tag::id`, split back on the
+                        # first `::`); a blank/whitespaced/`::` tag leaves the repo
+                        # boundary unprunable and unaddressable.
+                        print(f"error: invalid tag {value!r}: no blanks, whitespace, or '::'.",
+                              file=sys.stderr)
+                        sys.exit(1)
+                    tags[-1] = value
                     i += 1
-            if not source:
-                print("Usage: graphify global add <graph.json> [--as <repo-tag>]", file=sys.stderr)
-                sys.exit(1)
-            if not tag:
-                # Inferred through merge-graphs' own helper, which degrades to "repo"
-                # instead of "": an empty tag prunes by "" and registers a manifest
-                # entry no later add can address.
-                from graphify.build import distinct_repo_tags
-                tag = distinct_repo_tags([source.absolute()])[0]
-            try:
-                result = _global_add(source, tag)
-                if result["skipped"]:
-                    print(f"'{tag}' unchanged since last add - global graph not modified.")
+                elif arg.startswith("--"):
+                    print(f"error: unknown flag {arg!r}.", file=sys.stderr)
+                    sys.exit(1)
                 else:
-                    print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
-                          f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
-                    if result.get("cross_repo_calls"):
-                        print(f"  resolved {result['cross_repo_calls']} "
-                              f"member call(s) across repos")
+                    resolved = _resolve_source(arg)
+                    if resolved is None:
+                        print(f"error: no graph.json under directory {arg!r}.",
+                              file=sys.stderr)
+                        sys.exit(1)
+                    sources.append(resolved)
+                    tags.append(None)
+                    i += 1
+            if not sources:
+                print("Usage: graphify global add <graph-or-dir>... [--as <repo-tag>]",
+                      file=sys.stderr)
+                sys.exit(1)
+            # Name every untagged source in one call so distinct_repo_tags widens any
+            # colliding directory names across the batch; explicit tags keep position.
+            untagged = [s.absolute() for s, t in zip(sources, tags) if t is None]
+            inferred = iter(distinct_repo_tags(untagged))
+            units = [(s, t if t is not None else next(inferred))
+                     for s, t in zip(sources, tags)]
+            try:
+                batch = _global_add_many(units)
+                for result in batch["results"]:
+                    if result["skipped"]:
+                        print(f"'{result['repo_tag']}' unchanged since last add - skipped.")
+                    else:
+                        print(f"Added '{result['repo_tag']}' to global graph: "
+                              f"+{result['nodes_added']} nodes, -{result['nodes_removed']} pruned.")
+                if batch.get("cross_repo_calls"):
+                    print(f"  resolved {batch['cross_repo_calls']} member call(s) across repos")
+                print(f"Global: {_global_path()}")
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":
